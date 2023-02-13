@@ -84,7 +84,7 @@ class Bijection(AbstractBijection[A, B]):
     >>> del b[4]; b
     Bijection({3: 1, 2: 4})
 
-    >>> del b[2]; b
+    >>> del b.inv[4]; b
     Bijection({3: 1})
     """
 
