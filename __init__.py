@@ -3,6 +3,7 @@ import collections.abc
 import functools
 import typing
 
+
 A = typing.TypeVar(name='A')
 B = typing.TypeVar(name='B')
 
@@ -11,45 +12,46 @@ class AbstractBijection(collections.abc.MutableMapping[A, B], abc.ABC):
 
     @property
     @abc.abstractmethod
-    def inv(self) -> 'AbstractBijection':
+    def inv(self) -> 'AbstractBijection[B, A]':
         raise NotImplementedError
 
     @property
     @abc.abstractmethod
-    def _forwards(self) -> dict[A, B]:
+    def _mapping(self) -> typing.MutableMapping[A, B]:
         raise NotImplementedError
 
-    @property
-    @abc.abstractmethod
-    def _backwards(self) -> dict[B, A]:
-        raise NotImplementedError
+    def __repr__(self):
+        cls = type(self)
+        return f'{cls.__name__}({self._mapping})'
 
     def __iter__(self) -> typing.Iterator[A]:
-        return iter(self._forwards)
+        return iter(self._mapping)
 
     def __len__(self) -> int:
-        return len(self._forwards)
+        return len(self._mapping)
 
     def __getitem__(self, a: A) -> B:
-        return self._forwards[a]
+        return self._mapping[a]
 
     def __setitem__(self, a: A, b: B):
-        self._put(self._forwards, self._backwards, a, b)
-        self._put(self._backwards, self._forwards, b, a)
+        self._put(a, b)
+        self.inv._put(b, a)
 
     def __delitem__(self, a: A) -> None:
-        b = self._forwards.pop(a)
-        assert self._backwards.pop(b) == a
+        old_b = self._mapping.pop(a)
+        self.inv._check_pop(old_b, a)
 
-    def _put(self, forwards: dict[A, B], backwards: dict[B, A], a: A, b: B):
-        try:
-            old_b = forwards[a]
-        except KeyError:
-            forwards[a] = b
-        else:
-            if old_b != b:
-                assert backwards.pop(old_b) == a
-                forwards[a] = b
+    def _put(self, a: A, b: B) -> None:
+        old_b = self._mapping.setdefault(a, b)
+        if old_b != b:
+            self._mapping[a] = b
+            self.inv._check_pop(old_b, a)
+
+    def _check_pop(self, a: A, expected_b: B) -> None:
+        b = self._mapping.pop(a)
+        if expected_b != b:
+            found, expected = {a: b}, {a: expected_b}
+            raise RuntimeError(f'Invalid mapping found in Bijection: {found} should be {expected}')
 
 
 class Bijection(AbstractBijection[A, B]):
@@ -58,80 +60,75 @@ class Bijection(AbstractBijection[A, B]):
     Bijection({})
     >>> b.inv
     BijectionMirror({})
+    >>> b.inv.inv is b
+    True
 
     >>> b = Bijection([(1, 2), (3, 4)]); b
     Bijection({1: 2, 3: 4})
     >>> b.inv
-    BijectionMirror({1: 2, 3: 4})
+    BijectionMirror({2: 1, 4: 3})
 
+    # Like normal dictionaries, later values overwrite earlier ones when there
+    # are duplicated keys
     >>> b = Bijection([(1, 1), (1, 2), (1, 3)]); b
     Bijection({1: 3})
     >>> b.inv
-    BijectionMirror({1: 3})
+    BijectionMirror({3: 1})
 
-
+    # This also applies to the inverse view: when there are duplicated
+    # values, the earlier keys are silently dropped.
     >>> b = Bijection([(1, 1), (2, 1), (3, 1)]); b
     Bijection({3: 1})
     >>> b.inv
-    BijectionMirror({3: 1})
+    BijectionMirror({1: 3})
 
     >>> b[2] = 4; b
     Bijection({3: 1, 2: 4})
+    >>> b.inv
+    BijectionMirror({1: 3, 4: 2})
 
     >>> b.inv[2] = 4; b
     Bijection({3: 1, 2: 4, 4: 2})
+    >>> b.inv
+    BijectionMirror({1: 3, 4: 2, 2: 4})
 
-    >>> del b[4]; b
-    Bijection({3: 1, 2: 4})
 
-    >>> del b.inv[4]; b
-    Bijection({3: 1})
+    >>> b.pop(4), b
+    (2, Bijection({3: 1, 2: 4}))
+    >>> b.inv
+    BijectionMirror({1: 3, 4: 2})
+
+    >>> b.inv.pop(4), b
+    (2, Bijection({3: 1}))
+    >>> b.inv
+    BijectionMirror({1: 3})
     """
 
     def __init__(self, items: typing.Iterable[tuple[A, B]] = ()):
-        self._a2b = dict(items)
+        self._a2b = {}
         self._b2a = {}
-        for a, b in list(self.items()):
-            self._put(self._backwards, self._forwards, b, a)
+        for a, b in items:
+            self[a] = b
 
     @functools.cached_property
-    def inv(self) -> 'BijectionMirror':
+    def inv(self) -> 'BijectionMirror[B, A]':
         return BijectionMirror(self)
 
     @property
-    def _forwards(self) -> dict[A, B]:
+    def _mapping(self) -> dict[A, B]:
         return self._a2b
-
-    @property
-    def _backwards(self) -> dict[B, A]:
-        return self._b2a
-
-    def __repr__(self):
-        cls = type(self)
-        return f'{cls.__name__}({self._forwards})'
-
-    def values(self) -> typing.KeysView[B]:
-        return self.inv.keys()
 
 
 class BijectionMirror(AbstractBijection[B, A]):
 
-    def __init__(self, origin: Bijection):
+    def __init__(self, origin: Bijection[A, B]):
         self._origin = origin
 
     @property
-    def inv(self) -> Bijection:
+    def inv(self) -> Bijection[A, B]:
         return self._origin
 
     @property
-    def _forwards(self) -> dict[B, A]:
-        return self._origin._backwards
-
-    @property
-    def _backwards(self) -> dict[A, B]:
-        return self._origin._forwards
-
-    def __repr__(self):
-        cls = type(self)
-        return f'{cls.__name__}({self._backwards})'
-
+    def _mapping(self) -> dict[B, A]:
+        # noinspection PyProtectedMember
+        return self._origin._b2a
